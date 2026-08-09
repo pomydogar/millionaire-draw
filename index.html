@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>💎 The Millionaire Club — Live Draw</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<style>
+  :root {
+    --bg: #1a1030; --card: #2a1f45; --accent: #f6b93b;
+    --accent2: #e55039; --text: #f5f0ff; --muted: #b0a5cc; --green: #4cd97b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: radial-gradient(1200px 800px at 70% -10%, #3d2a6e 0%, var(--bg) 55%);
+    color: var(--text); min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 30px 16px 50px; text-align: center;
+  }
+  h1 { font-size: 1.7rem; margin-bottom: 4px; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--muted); font-size: .95rem; margin-bottom: 26px; }
+  .stage {
+    background: linear-gradient(160deg, var(--card) 0%, #342a52 100%);
+    border: 1px solid rgba(255,255,255,.08); border-radius: 22px;
+    padding: 34px 24px; width: 100%; max-width: 480px;
+    position: relative; overflow: hidden; margin-bottom: 22px;
+  }
+  .label { color: var(--muted); font-size: .88rem; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 12px; }
+  #big {
+    font-size: 2.3rem; font-weight: 800; color: var(--accent);
+    min-height: 60px; display: flex; align-items: center; justify-content: center;
+    text-shadow: 0 0 30px rgba(246,185,59,.35);
+  }
+  #big.winner { color: var(--green); text-shadow: 0 0 30px rgba(76,217,123,.5); animation: pop .5s ease; }
+  @keyframes pop { 0% {transform: scale(.6);} 60% {transform: scale(1.15);} 100% {transform: scale(1);} }
+  #detail { color: var(--muted); margin-top: 12px; font-size: .95rem; line-height: 1.5; }
+  .members { display: flex; flex-wrap: wrap; gap: 9px; justify-content: center; margin-top: 18px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: var(--bg); border: 1px solid rgba(255,255,255,.14);
+    border-radius: 999px; padding: 8px 14px; cursor: pointer;
+    user-select: none; font-size: .95rem;
+  }
+  .chip .dot { width: 10px; height: 10px; border-radius: 50%; background: #666; }
+  .chip.present { border-color: var(--green); background: rgba(76,217,123,.12); }
+  .chip.present .dot { background: var(--green); }
+  .chip.won { opacity: .4; text-decoration: line-through; cursor: default; }
+  .btn {
+    border: none; border-radius: 999px; cursor: pointer;
+    font-size: .95rem; font-weight: 700; padding: 11px 24px; margin-top: 16px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
+    color: #2b1500;
+    box-shadow: 0 5px 16px rgba(229,80,57,.3);
+  }
+  .past, .manage {
+    background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 16px; padding: 16px 20px; width: 100%; max-width: 480px; margin-bottom: 14px;
+  }
+  .past h2, .manage h2 { font-size: 1rem; margin-bottom: 8px; }
+  .past div, .manage p { color: var(--muted); font-size: .9rem; line-height: 1.8; }
+  .past b { color: var(--accent); }
+  .manage summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
+  .confetti { position: absolute; top: -10px; font-size: 1.3rem; animation: fall linear forwards; pointer-events: none; }
+  @keyframes fall { to { transform: translateY(560px) rotate(720deg); opacity: 0; } }
+  .foot { color: var(--muted); font-size: .78rem; margin-top: 16px; max-width: 440px; line-height: 1.5; }
+  .setup { background: rgba(229,80,57,.12); border: 1px solid rgba(229,80,57,.4); border-radius: 14px; padding: 18px; max-width: 480px; font-size: .9rem; line-height: 1.6; color: var(--text); }
+</style>
+</head>
+<body>
+  <h1>💎 The <span>Millionaire Club</span></h1>
+  <p class="sub">Live draw — every last Thursday · presence check 7:55 PM · draw 8:00 PM</p>
+
+  <div id="setupNotice" class="setup" style="display:none">
+    ⚠️ <b>Setup needed:</b> the Firebase config hasn't been filled in yet.
+    Open <code>index.html</code> and paste your project's config into
+    <code>FIREBASE_CONFIG</code> (see FIREBASE-SETUP.md).
+  </div>
+
+  <div class="stage" id="stage" style="display:none">
+    <div class="label" id="label">Loading…</div>
+    <div id="big">…</div>
+    <div id="detail"></div>
+    <div class="members" id="members" style="display:none"></div>
+    <button class="btn" id="missedBtn" style="display:none"></button>
+  </div>
+
+  <div class="past" id="pastBox" style="display:none">
+    <h2>🏆 Winners so far</h2>
+    <div id="pastList"></div>
+  </div>
+
+  <details class="manage">
+    <summary>⚙️ Fix past winners (be nice — shared with everyone)</summary>
+    <p style="margin-top:8px">Tap a member to toggle whether they've already won this cycle. Only use this to correct mistakes.</p>
+    <div class="members" id="manageList"></div>
+  </details>
+
+  <p class="foot">From 7:55 PM on party night, anyone at the party ticks who's present — it syncs to every phone instantly. At 8:00 PM sharp the draw runs by itself among the ticked members who haven't won yet, and every phone sees the same winner. If nobody ticks anyone, it's a virtual draw among everyone who hasn't won. One win per member per cycle. 🍀</p>
+
+<script>
+// ══════════ FILL THESE IN (see FIREBASE-SETUP.md) ══════════
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyD-WjW9rPNsxSdHDOED094ADFH3RovYUKo",
+  authDomain: "millionaire-club-995e7.firebaseapp.com",
+  databaseURL: "https://millionaire-club-995e7-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "millionaire-club-995e7",
+};
+// ═══════════════════════════════════════════════════════════
+
+const MEMBERS = ["AB","Ritesh","Simon","David","TJ","Paras","Raj","Nitin","Shiva","Sandeep","Rishi"];
+const PARTY_DATES = ["2026-08-27","2026-09-24","2026-10-29","2026-11-26","2026-12-31",
+                     "2027-01-28","2027-02-25","2027-03-25","2027-04-29","2027-05-27"];
+const TZ = "Pacific/Auckland";
+const TEST = new URLSearchParams(location.search).has("test");
+const $ = id => document.getElementById(id);
+
+let db = null, animating = false, revealDone = false;
+let won = {};      // name -> when   (shared, remembered forever)
+let draws = {};    // date -> winner (shared)
+let live = {};     // tonight: { presence: {name:true}, winner, virtual }
+let testStart = Date.now();
+
+// ---- time ----
+function nzNow() {
+  if (TEST) {
+    const elapsed = (Date.now() - testStart) / 1000;
+    return { date: "TEST", isParty: true, inWindow: true,
+             secsToWindow: 0, secsToDraw: Math.max(0, 90 - elapsed) };
+  }
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+  }).formatToParts(new Date());
+  const get = t => parts.find(p => p.type === t).value;
+  const date = `${get("year")}-${get("month")}-${get("day")}`;
+  const secs = (parseInt(get("hour")) % 24) * 3600 + parseInt(get("minute")) * 60 + parseInt(get("second"));
+  return {
+    date, isParty: PARTY_DATES.includes(date),
+    secsToWindow: 19 * 3600 + 55 * 60 - secs,
+    secsToDraw: 20 * 3600 - secs,
+    inWindow: secs >= 19 * 3600 + 55 * 60
+  };
+}
+function fmt(d) {
+  if (d === "TEST") return "Test night";
+  const [y, m, dd] = d.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, dd)).toLocaleDateString("en-NZ",
+    { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
+}
+function cd(secs) {
+  secs = Math.max(0, Math.floor(secs));
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+}
+
+// ---- firebase ----
+function initDb() {
+  if (String(FIREBASE_CONFIG.apiKey).startsWith("PASTE")) return false;
+  firebase.initializeApp(FIREBASE_CONFIG);
+  db = firebase.database();
+  db.ref("state/won").on("value", s => {
+    won = s.val() || {};
+    if (!Object.keys(won).length) db.ref("state/won").update({ "TJ": "Earlier this cycle" });
+    renderAll();
+  });
+  db.ref("state/draws").on("value", s => { draws = s.val() || {}; renderAll(); });
+  db.ref("live/" + nzNow().date).on("value", s => {
+    live = s.val() || {};
+    if ($("members").style.display !== "none") renderPresence();
+    if (live.winner && !revealDone && !animating) startReveal(live.winner, live.virtual);
+  });
+  return true;
+}
+
+// ---- rendering ----
+function renderAll() { renderPast(); renderManage(); if ($("members").style.display !== "none") renderPresence(); }
+
+function renderPresence() {
+  const box = $("members");
+  box.style.display = "flex";
+  box.innerHTML = "";
+  const p = live.presence || {};
+  MEMBERS.forEach(n => {
+    const wonAlready = n in won;
+    const chip = document.createElement("span");
+    chip.className = "chip" + (wonAlready ? " won" : (p[n] ? " present" : ""));
+    chip.innerHTML = `<span class="dot"></span>${n}`;
+    if (!wonAlready)
+      chip.onclick = () => db.ref("live/" + nzNow().date + "/presence/" + n).set(p[n] ? null : true);
+    box.appendChild(chip);
+  });
+}
+
+function renderPast() {
+  const lines = [];
+  Object.entries(won).forEach(([n, when]) => {
+    if (!Object.values(draws).includes(n)) lines.push(`${when === "manual" ? "Marked by the group" : when} — <b>${n}</b>`);
+  });
+  Object.entries(draws).sort().forEach(([d, w]) => lines.push(`${fmt(d)}${d in draws && live.date ? "" : ""} — <b>${w}</b>`));
+  $("pastBox").style.display = lines.length ? "block" : "none";
+  $("pastList").innerHTML = lines.join("<br>");
+}
+
+function renderManage() {
+  const box = $("manageList");
+  box.innerHTML = "";
+  MEMBERS.forEach(n => {
+    const chip = document.createElement("span");
+    chip.className = "chip" + (n in won ? " present" : "");
+    chip.innerHTML = `<span class="dot"></span>${n}`;
+    chip.onclick = () => {
+      if (!db) return;
+      if (n in won) db.ref("state/won/" + n).remove();
+      else db.ref("state/won/" + n).set("manual");
+    };
+    box.appendChild(chip);
+  });
+}
+
+// ---- draw ----
+function runDraw(dateKey) {
+  const ticked = MEMBERS.filter(n => (live.presence || {})[n] && !(n in won));
+  const everyone = MEMBERS.filter(n => !(n in won));
+  const virtual = ticked.length === 0;
+  const pool = virtual ? everyone : ticked;
+  if (!pool.length) return;
+  const rand = new Uint32Array(1);
+  crypto.getRandomValues(rand);
+  const winner = pool[rand[0] % pool.length];
+  // transaction on the whole node: only the FIRST phone to write wins — no double draws
+  db.ref("live/" + dateKey).transaction(
+    cur => (cur && cur.winner) ? undefined : Object.assign({}, cur, { winner, virtual }),
+    (err, committed, snap) => {
+      const v = snap && snap.val();
+      if (committed && v && !TEST) {
+        db.ref("state/won/" + v.winner).set(dateKey);
+        db.ref("state/draws/" + dateKey).set(v.winner);
+      }
+    });
+}
+
+function startReveal(winner, virtual) {
+  animating = true;
+  const big = $("big");
+  $("members").style.display = "none";
+  $("missedBtn").style.display = "none";
+  $("label").textContent = "🥁 Drawing…";
+  $("detail").textContent = "";
+  let ticks = 0, total = 30;
+  const iv = setInterval(() => {
+    ticks++;
+    big.textContent = MEMBERS[Math.floor(Math.random() * MEMBERS.length)];
+    if (ticks >= total) {
+      clearInterval(iv);
+      big.textContent = "🎉 " + winner + " 🎉";
+      big.classList.add("winner");
+      $("label").textContent = virtual ? "Winner — virtual draw" : "Tonight's winner";
+      $("detail").textContent = virtual ? "Nobody confirmed presence, so everyone still in the cycle was included. 💰🏆"
+                                        : "Congratulations! 💰🏆";
+      confetti();
+      animating = false; revealDone = true;
+    }
+  }, ticks < 22 ? 90 : 160);
+}
+
+function confetti() {
+  const stage = $("stage"), e = ["🎉","✨","🎊","💰","⭐","💎"];
+  for (let i = 0; i < 30; i++) {
+    const s = document.createElement("span");
+    s.className = "confetti";
+    s.textContent = e[Math.floor(Math.random() * e.length)];
+    s.style.left = Math.random() * 100 + "%";
+    s.style.animationDuration = (1.5 + Math.random() * 1.8) + "s";
+    s.style.animationDelay = (Math.random() * .5) + "s";
+    stage.appendChild(s);
+    setTimeout(() => s.remove(), 4000);
+  }
+}
+
+// missed draw catch-up: a past party night nobody opened the page for
+function missedDate(nowDate) {
+  return PARTY_DATES.filter(d => d < nowDate && !(d in draws)).pop() || null;
+}
+
+// ---- main loop ----
+function tick() {
+  if (animating || revealDone) return;
+  const now = nzNow();
+  const label = $("label"), big = $("big"), detail = $("detail");
+
+  if (live.winner) { startReveal(live.winner, live.virtual); return; }
+
+  if (!now.isParty) {
+    const next = PARTY_DATES.find(d => d > now.date);
+    label.textContent = next ? "Next draw" : "Cycle complete!";
+    big.textContent = next ? fmt(next) : "🏆 That's a wrap";
+    detail.textContent = next ? "Open this page at the party — presence check at 7:55 PM, draw at 8:00 PM." :
+                                "All members have had their win. See you next cycle!";
+    const missed = missedDate(now.date);
+    const btn = $("missedBtn");
+    if (missed && Object.keys(draws).length + Object.keys(won).length >= 1) {
+      btn.style.display = "inline-block";
+      btn.textContent = "🎲 Run missed draw for " + fmt(missed);
+      btn.onclick = () => {
+        live = {}; // no presence for a past night -> virtual draw
+        const everyone = MEMBERS.filter(n => !(n in won));
+        if (!everyone.length) return;
+        const rand = new Uint32Array(1);
+        crypto.getRandomValues(rand);
+        const winner = everyone[rand[0] % everyone.length];
+        db.ref("live/" + missed).transaction(
+          cur => (cur && cur.winner) ? undefined : Object.assign({}, cur, { winner, virtual: true }),
+          (err, committed, snap) => {
+            const v = snap && snap.val();
+            if (committed && v) {
+              db.ref("state/won/" + v.winner).set(missed);
+              db.ref("state/draws/" + missed).set(v.winner);
+              startReveal(v.winner, true);
+            }
+          });
+      };
+    } else btn.style.display = "none";
+    return;
+  }
+
+  if (draws[now.date]) {
+    big.textContent = "🎉 " + draws[now.date] + " 🎉";
+    big.classList.add("winner");
+    label.textContent = "Tonight's winner";
+    detail.textContent = "Congratulations! 💰🏆";
+    revealDone = true;
+    return;
+  }
+
+  if (!now.inWindow) {
+    label.textContent = "🎉 It's party day!";
+    big.textContent = cd(now.secsToWindow);
+    detail.textContent = "Presence check opens at 7:55 PM — draw at 8:00 PM sharp.";
+    return;
+  }
+
+  // 7:55 PM onwards — anyone can tick presence
+  renderPresence();
+  if (now.secsToDraw > 0) {
+    label.textContent = "✅ Who's at the party? Draw in…";
+    big.textContent = cd(now.secsToDraw);
+    detail.textContent = "Tap the members who are here — syncs to every phone. If nobody ticks, it'll be a virtual draw among all who haven't won.";
+  } else {
+    label.textContent = "🎲";
+    big.textContent = "Drawing…";
+    runDraw(now.date);
+  }
+}
+
+if (initDb()) {
+  $("stage").style.display = "block";
+  tick();
+  setInterval(tick, 1000);
+} else {
+  $("setupNotice").style.display = "block";
+}
+</script>
+</body>
+</html>
