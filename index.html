@@ -71,7 +71,7 @@
 </head>
 <body>
   <h1>💎 The <span>Millionaire Club</span></h1>
-  <p class="sub">Live draw — every last Thursday · presence check 7:55 PM · draw 8:00 PM</p>
+  <p class="sub">Live draw — every third Thursday · presence check 7:55 PM · draw 8:00 PM</p>
 
   <div id="setupNotice" class="setup" style="display:none">
     ⚠️ <b>Setup needed:</b> the Firebase config hasn't been filled in yet.
@@ -111,17 +111,21 @@ const FIREBASE_CONFIG = {
 // ═══════════════════════════════════════════════════════════
 
 const MEMBERS = ["AB","Ritesh","Simon","David","TJ","Paras","Raj","Nitin","Shiva","Sandeep","Rishi"];
-const PARTY_DATES = ["2026-08-27","2026-09-24","2026-10-29","2026-11-26","2026-12-31",
-                     "2027-01-28","2027-02-25","2027-03-25","2027-04-29","2027-05-27"];
+const PARTY_DATES = ["2026-08-27","2026-09-17","2026-10-15","2026-11-19","2026-12-17",
+                     "2027-01-21","2027-02-18","2027-03-18","2027-04-15","2027-05-20"];
 const TZ = "Pacific/Auckland";
 const TEST = new URLSearchParams(location.search).has("test");
 const $ = id => document.getElementById(id);
 
-let db = null, animating = false, revealDone = false;
+let db = null, animating = false, revealDone = false, drawingNow = false;
 let won = {};      // name -> when   (shared, remembered forever)
 let draws = {};    // date -> winner (shared)
 let live = {};     // tonight: { presence: {name:true}, winner, virtual }
 let testStart = Date.now();
+// each phone waits a slightly different time past 8:00 before trying to draw,
+// giving the server-side waiter (and each other) room — the conditional write
+// guarantees only ONE draw ever lands regardless.
+const DRAW_JITTER = 40 + Math.floor(Math.random() * 8);
 
 // ---- time ----
 function nzNow() {
@@ -154,6 +158,40 @@ function cd(secs) {
   secs = Math.max(0, Math.floor(secs));
   const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
   return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+}
+
+// ---- REST helpers (server-authoritative, no local optimistic state) ----
+function dbUrl() { return FIREBASE_CONFIG.databaseURL.replace(/\/$/, ""); }
+async function restGet(path) {
+  const r = await fetch(`${dbUrl()}/${path}.json`, { cache: "no-store" });
+  return r.json();
+}
+async function tryClaimWinner(dateKey, winner, virtual) {
+  // Conditional create: succeeds only if no winner exists yet. Everyone else
+  // gets told who the real winner is. This is what makes the draw exactly-once.
+  const g = await fetch(`${dbUrl()}/live/${dateKey}/winner.json`,
+                        { headers: { "X-Firebase-ETag": "true" }, cache: "no-store" });
+  const etag = g.headers.get("ETag");
+  const cur = await g.json();
+  if (cur) return { winner: cur, claimed: false };
+  const put = await fetch(`${dbUrl()}/live/${dateKey}/winner.json`, {
+    method: "PUT",
+    headers: etag ? { "if-match": etag } : {},
+    body: JSON.stringify(winner),
+  });
+  if (put.status === 412) {
+    return { winner: await restGet(`live/${dateKey}/winner`), claimed: false };
+  }
+  if (!put.ok) throw new Error("winner write failed: " + put.status);
+  if (!etag) {
+    // ETag unavailable: verify we actually won the race
+    await new Promise(r => setTimeout(r, 800));
+    const check = await restGet(`live/${dateKey}/winner`);
+    if (check !== winner) return { winner: check, claimed: false };
+  }
+  await fetch(`${dbUrl()}/live/${dateKey}/virtual.json`,
+              { method: "PUT", body: JSON.stringify(!!virtual) });
+  return { winner, claimed: true };
 }
 
 // ---- firebase ----
@@ -221,25 +259,46 @@ function renderManage() {
 }
 
 // ---- draw ----
-function runDraw(dateKey) {
-  const ticked = MEMBERS.filter(n => (live.presence || {})[n] && !(n in won));
-  const everyone = MEMBERS.filter(n => !(n in won));
-  const virtual = ticked.length === 0;
-  const pool = virtual ? everyone : ticked;
-  if (!pool.length) return;
-  const rand = new Uint32Array(1);
-  crypto.getRandomValues(rand);
-  const winner = pool[rand[0] % pool.length];
-  // transaction on the whole node: only the FIRST phone to write wins — no double draws
-  db.ref("live/" + dateKey).transaction(
-    cur => (cur && cur.winner) ? undefined : Object.assign({}, cur, { winner, virtual }),
-    (err, committed, snap) => {
-      const v = snap && snap.val();
-      if (committed && v && !TEST) {
-        db.ref("state/won/" + v.winner).set(dateKey);
-        db.ref("state/draws/" + dateKey).set(v.winner);
+// Fetches FRESH presence and winner data from the server right before drawing
+// (never trusts this phone's possibly-stale cache), and uses a conditional
+// write so exactly one draw can ever land. The reveal happens only when the
+// server pushes the confirmed winner back to every phone — identical everywhere.
+async function runDraw(dateKey, opts) {
+  if (drawingNow || revealDone) return;
+  drawingNow = true;
+  try {
+    const [freshWon, freshPres, existing] = await Promise.all([
+      restGet("state/won"), restGet(`live/${dateKey}/presence`), restGet(`live/${dateKey}/winner`)]);
+    if (existing) return; // already drawn — the listener will reveal it
+    const wonMap = freshWon || {}, pres = freshPres || {};
+    const ticked = MEMBERS.filter(n => pres[n] && !(n in wonMap));
+    const everyone = MEMBERS.filter(n => !(n in wonMap));
+    let pool = ticked, virtual = false;
+    if (!ticked.length) {
+      // nobody confirmed presence — hold the virtual fallback until 8:10 PM
+      // so latecomers can still tick (unless this is a test/missed-draw run)
+      if (!(opts && opts.allowVirtualNow)) {
+        const now = nzNow();
+        if (!TEST && now.secsToDraw > -(10 * 60)) return; // retry on a later tick
       }
-    });
+      pool = everyone; virtual = true;
+    }
+    if (!pool.length) return;
+    const rand = new Uint32Array(1);
+    crypto.getRandomValues(rand);
+    const winner = pool[rand[0] % pool.length];
+    const res = await tryClaimWinner(dateKey, winner, virtual);
+    if (res.claimed && !TEST) {
+      await fetch(`${dbUrl()}/.json`, { method: "PATCH", body: JSON.stringify({
+        [`state/won/${res.winner}`]: dateKey,
+        [`state/draws/${dateKey}`]: res.winner,
+      })});
+    }
+  } catch (e) {
+    console.log("draw attempt failed, will retry:", e);
+  } finally {
+    drawingNow = false;
+  }
 }
 
 function startReveal(winner, virtual) {
@@ -304,23 +363,12 @@ function tick() {
     if (missed && Object.keys(draws).length + Object.keys(won).length >= 1) {
       btn.style.display = "inline-block";
       btn.textContent = "🎲 Run missed draw for " + fmt(missed);
-      btn.onclick = () => {
-        live = {}; // no presence for a past night -> virtual draw
-        const everyone = MEMBERS.filter(n => !(n in won));
-        if (!everyone.length) return;
-        const rand = new Uint32Array(1);
-        crypto.getRandomValues(rand);
-        const winner = everyone[rand[0] % everyone.length];
-        db.ref("live/" + missed).transaction(
-          cur => (cur && cur.winner) ? undefined : Object.assign({}, cur, { winner, virtual: true }),
-          (err, committed, snap) => {
-            const v = snap && snap.val();
-            if (committed && v) {
-              db.ref("state/won/" + v.winner).set(missed);
-              db.ref("state/draws/" + missed).set(v.winner);
-              startReveal(v.winner, true);
-            }
-          });
+      btn.onclick = async () => {
+        btn.disabled = true;
+        await runDraw(missed, { allowVirtualNow: true });
+        const w = await restGet(`live/${missed}/winner`);
+        if (w && !revealDone) startReveal(w, true);
+        btn.disabled = false;
       };
     } else btn.style.display = "none";
     return;
@@ -349,9 +397,14 @@ function tick() {
     big.textContent = cd(now.secsToDraw);
     detail.textContent = "Tap the members who are here — syncs to every phone. If nobody ticks, it'll be a virtual draw among all who haven't won.";
   } else {
-    label.textContent = "🎲";
+    label.textContent = "🥁";
     big.textContent = "Drawing…";
-    runDraw(now.date);
+    detail.textContent = "Any second now — every phone will show the same winner.";
+    // The club's server does the draw at 8:00 sharp. If it hasn't within
+    // ~40s (plus per-phone jitter), phones step in as backup — the
+    // conditional write still guarantees exactly one result.
+    const secsPast8 = -now.secsToDraw;
+    if (TEST || secsPast8 >= DRAW_JITTER) runDraw(now.date);
   }
 }
 
