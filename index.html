@@ -71,7 +71,7 @@
 </head>
 <body>
   <h1>💎 The <span>Millionaire Club</span></h1>
-  <p class="sub">Live draw — every third Thursday · presence check 7:55 PM · draw 8:00 PM</p>
+  <p class="sub">Live draw — every third Thursday · tick presence from 7:30 PM · draw 7:55 PM</p>
 
   <div id="setupNotice" class="setup" style="display:none">
     ⚠️ <b>Setup needed:</b> the Firebase config hasn't been filled in yet.
@@ -98,7 +98,7 @@
     <div class="members" id="manageList"></div>
   </details>
 
-  <p class="foot">From 7:55 PM on party night, anyone at the party ticks who's present — it syncs to every phone instantly. At 8:00 PM sharp the draw runs by itself among the ticked members who haven't won yet, and every phone sees the same winner. If nobody ticks anyone, it's a virtual draw among everyone who hasn't won. One win per member per cycle. 🍀</p>
+  <p class="foot">From 7:30 PM on party night, anyone at the party ticks who's present — it syncs to every phone instantly. At 7:50 PM the club bot posts the draw call in the group, and at 7:55 PM sharp it runs the draw among the ticked members who haven't won yet — every phone reveals the same winner. If nobody ticks anyone, it becomes a virtual draw among everyone still in the cycle at 8:05. One win per member per cycle. 🍀</p>
 
 <script>
 // ══════════ FILL THESE IN (see FIREBASE-SETUP.md) ══════════
@@ -122,10 +122,9 @@ let won = {};      // name -> when   (shared, remembered forever)
 let draws = {};    // date -> winner (shared)
 let live = {};     // tonight: { presence: {name:true}, winner, virtual }
 let testStart = Date.now();
-// each phone waits a slightly different time past 8:00 before trying to draw,
-// giving the server-side waiter (and each other) room — the conditional write
-// guarantees only ONE draw ever lands regardless.
-const DRAW_JITTER = 40 + Math.floor(Math.random() * 8);
+// The club bot performs the draw at 7:55 PM — this page never draws by
+// itself. It only offers a manual backup button if the bot hasn't produced
+// a winner by 8:05 PM (the conditional write still guarantees ONE result).
 
 // ---- time ----
 function nzNow() {
@@ -143,9 +142,9 @@ function nzNow() {
   const secs = (parseInt(get("hour")) % 24) * 3600 + parseInt(get("minute")) * 60 + parseInt(get("second"));
   return {
     date, isParty: PARTY_DATES.includes(date),
-    secsToWindow: 19 * 3600 + 55 * 60 - secs,
-    secsToDraw: 20 * 3600 - secs,
-    inWindow: secs >= 19 * 3600 + 55 * 60
+    secsToWindow: 19 * 3600 + 30 * 60 - secs,
+    secsToDraw: 19 * 3600 + 55 * 60 - secs,
+    inWindow: secs >= 19 * 3600 + 30 * 60
   };
 }
 function fmt(d) {
@@ -275,7 +274,7 @@ async function runDraw(dateKey, opts) {
     const everyone = MEMBERS.filter(n => !(n in wonMap));
     let pool = ticked, virtual = false;
     if (!ticked.length) {
-      // nobody confirmed presence — hold the virtual fallback until 8:10 PM
+      // nobody confirmed presence — hold the virtual fallback until 8:05 PM
       // so latecomers can still tick (unless this is a test/missed-draw run)
       if (!(opts && opts.allowVirtualNow)) {
         const now = nzNow();
@@ -356,7 +355,7 @@ function tick() {
     const next = PARTY_DATES.find(d => d > now.date);
     label.textContent = next ? "Next draw" : "Cycle complete!";
     big.textContent = next ? fmt(next) : "🏆 That's a wrap";
-    detail.textContent = next ? "Open this page at the party — presence check at 7:55 PM, draw at 8:00 PM." :
+    detail.textContent = next ? "Open this page at the party — tick presence from 7:30 PM, draw at 7:55 PM." :
                                 "All members have had their win. See you next cycle!";
     const missed = missedDate(now.date);
     const btn = $("missedBtn");
@@ -386,25 +385,34 @@ function tick() {
   if (!now.inWindow) {
     label.textContent = "🎉 It's party day!";
     big.textContent = cd(now.secsToWindow);
-    detail.textContent = "Presence check opens at 7:55 PM — draw at 8:00 PM sharp.";
+    detail.textContent = "Presence ticking opens at 7:30 PM — draw call 7:50, draw 7:55 PM sharp.";
     return;
   }
 
-  // 7:55 PM onwards — anyone can tick presence
+  // 7:30 PM onwards — anyone can tick presence
   renderPresence();
   if (now.secsToDraw > 0) {
     label.textContent = "✅ Who's at the party? Draw in…";
     big.textContent = cd(now.secsToDraw);
-    detail.textContent = "Tap the members who are here — syncs to every phone. If nobody ticks, it'll be a virtual draw among all who haven't won.";
+    detail.textContent = "Tap the members who are here — syncs to every phone. The club bot draws at 7:55 PM sharp among ticked members.";
   } else {
     label.textContent = "🥁";
     big.textContent = "Drawing…";
-    detail.textContent = "Any second now — every phone will show the same winner.";
-    // The club's server does the draw at 8:00 sharp. If it hasn't within
-    // ~40s (plus per-phone jitter), phones step in as backup — the
-    // conditional write still guarantees exactly one result.
-    const secsPast8 = -now.secsToDraw;
-    if (TEST || secsPast8 >= DRAW_JITTER) runDraw(now.date);
+    detail.textContent = "The club bot is doing the draw — every phone will show the same winner.";
+    if (TEST) { runDraw(now.date); return; }
+    // Bot late? Offer a manual backup from 8:05 PM (conditional write
+    // still guarantees exactly one result).
+    const secsPast = -now.secsToDraw;
+    const btn = $("missedBtn");
+    if (secsPast >= 10 * 60) {
+      btn.style.display = "inline-block";
+      btn.textContent = "🎲 Bot late? Run the draw now";
+      btn.onclick = async () => {
+        btn.disabled = true;
+        await runDraw(now.date);
+        btn.disabled = false;
+      };
+    }
   }
 }
 
