@@ -98,7 +98,7 @@
     <div class="members" id="manageList"></div>
   </details>
 
-  <p class="foot">From 7:30 PM on party night, anyone at the party ticks who's present — it syncs to every phone instantly. At 7:50 PM the club bot posts the draw call in the group, and at 7:55 PM sharp it runs the draw among the ticked members who haven't won yet — every phone reveals the same winner. If nobody ticks anyone, it becomes a virtual draw among everyone still in the cycle at 8:05. One win per member per cycle. 🍀</p>
+  <p class="foot">From 7:30 PM on party night, anyone at the party ticks who's present — it syncs to every phone instantly. At 7:50 PM the club bot posts the draw call in the group, and at 7:55 PM sharp the RUN THE DRAW button unlocks — whoever's doing the presence check taps it and the wheel spins to the winner, identical on every phone. If nobody runs it by 8:10, the club bot draws automatically (virtual draw if nobody ticked). One win per member per cycle. 🍀</p>
 
 <script>
 // ══════════ FILL THESE IN (see FIREBASE-SETUP.md) ══════════
@@ -274,11 +274,11 @@ async function runDraw(dateKey, opts) {
     const everyone = MEMBERS.filter(n => !(n in wonMap));
     let pool = ticked, virtual = false;
     if (!ticked.length) {
-      // nobody confirmed presence — hold the virtual fallback until 8:05 PM
+      // nobody confirmed presence — hold the virtual fallback until 8:10 PM
       // so latecomers can still tick (unless this is a test/missed-draw run)
       if (!(opts && opts.allowVirtualNow)) {
         const now = nzNow();
-        if (!TEST && now.secsToDraw > -(10 * 60)) return; // retry on a later tick
+        if (!TEST && now.secsToDraw > -(15 * 60)) return; // retry on a later tick
       }
       pool = everyone; virtual = true;
     }
@@ -302,17 +302,69 @@ async function runDraw(dateKey, opts) {
 
 function startReveal(winner, virtual) {
   animating = true;
-  const big = $("big");
   $("members").style.display = "none";
   $("missedBtn").style.display = "none";
-  $("label").textContent = "🥁 Drawing…";
+  $("label").textContent = virtual ? "🎡 Virtual draw — spinning…" : "🎡 Spinning the wheel…";
   $("detail").textContent = "";
-  let ticks = 0, total = 30;
-  const iv = setInterval(() => {
-    ticks++;
-    big.textContent = MEMBERS[Math.floor(Math.random() * MEMBERS.length)];
-    if (ticks >= total) {
-      clearInterval(iv);
+  const p = live.presence || {};
+  let pool = MEMBERS.filter(n => p[n] && !(n in won));
+  if (virtual || !pool.length) pool = MEMBERS.filter(n => !(n in won));
+  if (!pool.includes(winner)) pool.push(winner);
+  if (pool.length < 2) pool = [winner].concat(MEMBERS.filter(n => n !== winner).slice(0, 3));
+  spinWheel(pool, winner, virtual);
+}
+
+function spinWheel(pool, winner, virtual) {
+  const big = $("big");
+  big.classList.remove("winner");
+  big.innerHTML = "";
+  const size = Math.min(320, Math.max(220, window.innerWidth - 90));
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "position:relative;margin:0 auto;width:" + size + "px;height:" + (size + 14) + "px;";
+  const ptr = document.createElement("div");
+  ptr.textContent = "🔻";
+  ptr.style.cssText = "position:absolute;top:-16px;left:50%;transform:translateX(-50%);font-size:1.7rem;z-index:2;filter:drop-shadow(0 2px 4px rgba(0,0,0,.6));";
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = size * 2;
+  cv.style.cssText = "width:" + size + "px;height:" + size + "px;margin-top:12px;";
+  wrap.appendChild(ptr); wrap.appendChild(cv);
+  big.appendChild(wrap);
+  const ctx = cv.getContext("2d");
+  ctx.scale(2, 2);
+  const n = pool.length, seg = 2 * Math.PI / n, r = size / 2;
+  const colors = ["#f6b93b","#e55039","#4cd97b","#6a89cc","#e58e26","#b71540","#38ada9","#8e44ad","#f8c291","#60a3bc","#78e08f"];
+  function draw(angle) {
+    ctx.clearRect(0, 0, size, size);
+    for (let i = 0; i < n; i++) {
+      const a0 = angle + i * seg;
+      ctx.beginPath(); ctx.moveTo(r, r); ctx.arc(r, r, r - 4, a0, a0 + seg); ctx.closePath();
+      ctx.fillStyle = colors[i % colors.length]; ctx.fill();
+      ctx.strokeStyle = "rgba(26,16,48,.55)"; ctx.lineWidth = 2; ctx.stroke();
+      ctx.save();
+      ctx.translate(r, r); ctx.rotate(a0 + seg / 2);
+      ctx.textAlign = "right"; ctx.fillStyle = "#1a1030";
+      ctx.font = "bold " + Math.max(11, 17 - n) + "px 'Segoe UI', system-ui, sans-serif";
+      ctx.fillText(pool[i], r - 16, 5);
+      ctx.restore();
+    }
+    ctx.beginPath(); ctx.arc(r, r, 20, 0, 7);
+    ctx.fillStyle = "#1a1030"; ctx.fill();
+    ctx.strokeStyle = "#f6b93b"; ctx.lineWidth = 2; ctx.stroke();
+    ctx.font = "16px sans-serif"; ctx.textAlign = "center"; ctx.fillText("💎", r, r + 6);
+  }
+  const wIdx = pool.indexOf(winner);
+  // the pointer sits at the top (-90°); the wheel must stop with the
+  // winner's segment centre exactly under it, after several full spins
+  const target = -Math.PI / 2 - wIdx * seg - seg / 2;
+  const finalAngle = target + 7 * 2 * Math.PI;
+  const dur = 6500, start = performance.now();
+  const ease = t => 1 - Math.pow(1 - t, 3.2);
+  function frame(now) {
+    const t = Math.min(1, (now - start) / dur);
+    draw(finalAngle * ease(t));
+    if (t < 1) { requestAnimationFrame(frame); return; }
+    setTimeout(() => {
+      big.innerHTML = "";
       big.textContent = "🎉 " + winner + " 🎉";
       big.classList.add("winner");
       $("label").textContent = virtual ? "Winner — virtual draw" : "Tonight's winner";
@@ -320,8 +372,9 @@ function startReveal(winner, virtual) {
                                         : "Congratulations! 💰🏆";
       confetti();
       animating = false; revealDone = true;
-    }
-  }, ticks < 22 ? 90 : 160);
+    }, 900);
+  }
+  requestAnimationFrame(frame);
 }
 
 function confetti() {
@@ -385,34 +438,38 @@ function tick() {
   if (!now.inWindow) {
     label.textContent = "🎉 It's party day!";
     big.textContent = cd(now.secsToWindow);
-    detail.textContent = "Presence ticking opens at 7:30 PM — draw call 7:50, draw 7:55 PM sharp.";
+    detail.textContent = "Presence ticking opens at 7:30 PM — draw call 7:50, draw button unlocks 7:55 PM.";
     return;
   }
 
   // 7:30 PM onwards — anyone can tick presence
   renderPresence();
   if (now.secsToDraw > 0) {
-    label.textContent = "✅ Who's at the party? Draw in…";
+    label.textContent = "✅ Who's at the party? Draw unlocks in…";
     big.textContent = cd(now.secsToDraw);
-    detail.textContent = "Tap the members who are here — syncs to every phone. The club bot draws at 7:55 PM sharp among ticked members.";
+    detail.textContent = "Tap the members who are here — syncs to every phone. The RUN THE DRAW button unlocks at 7:55 PM.";
   } else {
-    label.textContent = "🥁";
-    big.textContent = "Drawing…";
-    detail.textContent = "The club bot is doing the draw — every phone will show the same winner.";
-    if (TEST) { runDraw(now.date); return; }
-    // Bot late? Offer a manual backup from 8:05 PM (conditional write
-    // still guarantees exactly one result).
-    const secsPast = -now.secsToDraw;
+    label.textContent = "🎲 It's draw time!";
+    big.textContent = "🎡";
+    const warnUntil = Number($("missedBtn").dataset.warnUntil || 0);
+    if (!$("missedBtn").disabled && Date.now() > warnUntil)
+      detail.textContent = "Whoever did the presence check — hit the button! (If nobody runs it by 8:10, the club bot draws automatically.)";
     const btn = $("missedBtn");
-    if (secsPast >= 10 * 60) {
-      btn.style.display = "inline-block";
-      btn.textContent = "🎲 Bot late? Run the draw now";
-      btn.onclick = async () => {
-        btn.disabled = true;
-        await runDraw(now.date);
-        btn.disabled = false;
-      };
-    }
+    btn.style.display = "inline-block";
+    btn.textContent = "🎲 RUN THE DRAW";
+    btn.onclick = async () => {
+      const p = live.presence || {};
+      const ticked = MEMBERS.filter(n => p[n] && !(n in won));
+      if (!ticked.length && !TEST) {
+        btn.dataset.warnUntil = Date.now() + 5000;
+        detail.textContent = "⚠️ Nobody is ticked yet — tick who's here first!";
+        return;
+      }
+      btn.disabled = true;
+      detail.textContent = "🎡 Spinning up the wheel…";
+      await runDraw(now.date, TEST ? { allowVirtualNow: true } : undefined);
+      btn.disabled = false;
+    };
   }
 }
 
