@@ -53,6 +53,21 @@
     font-weight: 700; font-size: .95rem; padding: 11px 24px; cursor: pointer;
   }
   .linklike { background: none; border: none; color: var(--muted); font-size: .8rem; text-decoration: underline; cursor: pointer; margin-top: 14px; }
+  .ledger {
+    background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1);
+    border-radius: 16px; padding: 18px; margin: 6px 0 14px; text-align: left;
+  }
+  .ledger h2 { font-size: 1rem; margin-bottom: 4px; }
+  .ledger .bal { color: var(--green); font-size: .95rem; font-weight: 700; margin-bottom: 12px; }
+  .ledger input {
+    width: 100%; background: var(--bg); color: var(--text);
+    border: 1px solid rgba(255,255,255,.18); border-radius: 10px;
+    padding: 11px 12px; font-size: .95rem; margin-bottom: 10px;
+  }
+  .ledger details { margin-top: 10px; }
+  .ledger summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
+  .ledger label { display: block; color: var(--muted); font-size: .82rem; margin: 10px 0 4px; }
+  .ledger .cfgmsg { color: var(--green); font-size: .85rem; margin-left: 10px; }
   a { color: var(--accent); }
 </style>
 </head>
@@ -79,6 +94,26 @@
     <button class="btn" data-wf="test-message.yml" data-label="Test message">
       <span class="em">🤖</span><span>Send test message<small>posts "beep boop" so you know the bot works</small></span>
     </button>
+
+    <div class="ledger">
+      <h2>📒 Party ledger</h2>
+      <div class="bal" id="ledgerBal">Balance: loading…</div>
+      <input id="spent" type="number" inputmode="decimal" min="0" step="0.01" placeholder="Party expenses, e.g. 430.50">
+      <input id="lnote" type="text" placeholder="What was it spent on? (optional)" maxlength="120">
+      <button class="btn" id="ledgerBtn">
+        <span class="em">🧾</span><span>Send ledger update<small>records the expenses + posts the balance in the group</small></span>
+      </button>
+      <details>
+        <summary>⚙️ Ledger settings</summary>
+        <label>Opening balance — surplus carried in ($)</label>
+        <input id="cfgOpening" type="number" inputmode="decimal" step="0.01">
+        <label>Contribution per person ($) — ×11 members</label>
+        <input id="cfgPer" type="number" inputmode="decimal" step="0.01">
+        <label>Kept for bills each party ($)</label>
+        <input id="cfgDeduction" type="number" inputmode="decimal" step="0.01">
+        <button class="save" onclick="saveLedgerCfg()">Save settings</button><span class="cfgmsg" id="cfgMsg"></span>
+      </details>
+    </div>
     <div class="status" id="status"></div>
     <button class="linklike" onclick="resetToken()">Change access token</button>
   </div>
@@ -154,6 +189,94 @@ async function fire(btn) {
     st.textContent = "❌ Network error — are you online?";
   }
 }
+
+// ---- ledger ----
+const DBURL = "https://millionaire-club-995e7-default-rtdb.asia-southeast1.firebasedatabase.app";
+async function loadLedger() {
+  try {
+    const [cfg, entries] = await Promise.all([
+      fetch(DBURL + "/ledger/config.json", { cache: "no-store" }).then(r => r.json()),
+      fetch(DBURL + "/ledger/entries.json", { cache: "no-store" }).then(r => r.json()),
+    ]);
+    const c = cfg || {};
+    if (document.activeElement !== $("cfgOpening")) $("cfgOpening").value = c.opening ?? 0;
+    if (document.activeElement !== $("cfgPer")) $("cfgPer").value = c.perPerson ?? 1200;
+    if (document.activeElement !== $("cfgDeduction")) $("cfgDeduction").value = c.deduction ?? 500;
+    let kept = 0, spentT = 0;
+    Object.values(entries || {}).forEach(e => { kept += Number(e.deduction || 0); spentT += Number(e.spent || 0); });
+    const bal = Number(c.opening || 0) + kept - spentT;
+    $("ledgerBal").textContent = "Balance: $" + bal.toLocaleString("en-NZ", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  } catch (e) {
+    $("ledgerBal").textContent = "Balance: (couldn't load — check internet)";
+  }
+}
+async function saveLedgerCfg() {
+  const body = JSON.stringify({
+    opening: Number($("cfgOpening").value || 0),
+    perPerson: Number($("cfgPer").value || 1200),
+    deduction: Number($("cfgDeduction").value || 500),
+  });
+  try {
+    await fetch(DBURL + "/ledger/config.json", { method: "PUT", body });
+    $("cfgMsg").textContent = "✔ saved";
+  } catch (e) { $("cfgMsg").textContent = "❌ failed"; }
+  setTimeout(() => { $("cfgMsg").textContent = ""; }, 3000);
+  loadLedger();
+}
+async function fireLedger() {
+  const st = $("status");
+  const spent = $("spent").value.trim();
+  if (!spent || isNaN(Number(spent)) || Number(spent) < 0) {
+    st.className = "status err";
+    st.textContent = "❌ Enter the spent amount first (numbers only).";
+    return;
+  }
+  st.className = "status"; st.textContent = "Sending…";
+  try {
+    const r = await fetch(`https://api.github.com/repos/${REPO}/actions/workflows/ledger-report.yml/dispatches`, {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + getToken(),
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ref: "main", inputs: { spent: spent, note: $("lnote").value.trim() } }),
+    });
+    if (r.status === 204) {
+      st.className = "status ok";
+      st.textContent = "✅ Ledger update started — the breakdown lands in the group in ~30s.";
+      $("spent").value = ""; $("lnote").value = "";
+      setTimeout(loadLedger, 25000);
+    } else if (r.status === 401 || r.status === 403) {
+      st.className = "status err";
+      st.textContent = "❌ Token rejected or expired — tap 'Change access token' below.";
+    } else {
+      st.className = "status err";
+      st.textContent = "❌ GitHub said " + r.status + " — check the workflow exists.";
+    }
+  } catch (e) {
+    st.className = "status err";
+    st.textContent = "❌ Network error — are you online?";
+  }
+}
+{
+  const lb = $("ledgerBtn");
+  let ledgerArmed = false, ledgerTimer = null;
+  lb.addEventListener("click", () => {
+    if (ledgerArmed) {
+      ledgerArmed = false; lb.classList.remove("arm");
+      clearTimeout(ledgerTimer);
+      fireLedger();
+    } else {
+      ledgerArmed = true; lb.classList.add("arm");
+      $("status").className = "status";
+      $("status").textContent = "Tap “Send ledger update” again to post it in the group.";
+      ledgerTimer = setTimeout(() => { ledgerArmed = false; lb.classList.remove("arm"); }, 6000);
+    }
+  });
+}
+loadLedger();
 
 document.querySelectorAll(".btn[data-wf]").forEach(btn => {
   btn.addEventListener("click", () => {
